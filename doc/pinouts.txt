@@ -1,0 +1,35 @@
+RELAY OUT  |  CABLE
+-----------|--------
+         1 | 32  - shift (high)
+         2 | 33  - shift (low)
+         3 | 30  - compressor
+         4 | shoulder lock
+         5 | shoulder unlock
+         6 | 35 - finger lock
+         7 | 2  - finger unlock
+
+
+DIG I/O  |  CABLE
+---------|--------
+       1 | Right Sensor (robot's left)
+       2 | Left Sensor (robot's right)
+       3 | Pressure Sensor
+       4 | Finger Min Limit
+       5 | Finger Max Limit
+       6 | Finger Ctr Limit
+       7 | Shoulder Min Limit
+       8 | Shoulder Max Limit
+
+
+PWM  |  CABLE
+-----|--------
+   1 | 29 - robot's right wheel
+   2 | 28 - robot's left wheel
+   3 | Shoulder Motors
+   4 | Finger Motors
+
+
+
+ANALOG In  |  CABLE
+-----------|--------
+         0 | Shoulder Pot

@@ -1,0 +1,2 @@
+Warning[2065] C:\first\v2.0\src\NCSSM\aut1.c 122 : static function 'distance_isDone' never referenced
+Warning[2065] C:\first\v2.0\src\NCSSM\aut1.c 122 : static function 'distance_start' never referenced

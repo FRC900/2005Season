@@ -1,0 +1,297 @@
+#define wheel_drivers_c
+
+#include <stdio.h>
+#include "ifi_aliases.h"
+#include "ifi_default.h"
+#include "ifi_utilities.h"
+#include "ifi_picdefs.h"
+
+#include "wheels.h"
+#include "speedometer.h"
+
+/** Local Prototypes **/
+long limitTurningSpeed(long a_turningSpeed);
+long limitSpeed(long a_speed);
+char wheels_getDriveDirection(char a_pwm);
+int safeAdd(int one, int two);
+unsigned char safePWMs(long one, long two);
+
+/*** exported globals ***/
+
+
+
+
+
+/*** constants and defines ***/
+#define Trun 1
+#define OUTscale 1
+#define CoeffScale 7
+#define OUTmax 127
+#define OUTmin -128
+
+/***********************************************************
+ *  Set up Forward Velocity Coefficients
+ *  Ts = 0.1ms 
+ *  1/Ts = TsINV = 10000
+ *  Ex = Inches/tooth = 1/3 = 8.47mm
+ *  Uv = Scale from (teeth/Ts) to (mm/s) = 8.47/0.0001 = 84700(mm/sec)
+ *  Max speed = 113 (in/sec) = 2872 (mm/sec)
+ *  Min speed = 20mm/sec
+ ************************************************************/
+#define TsINV = 10000
+#define Uv = 84700
+#define Smax = 2872
+#define Smin = 20
+
+
+/*************************************************************
+ * Set up Turning Velocity Coefficients and limits
+ * The Robot is 27.25inches wide wheel to wheel
+ * When pivoting around center (i.e. left reverse, right forward)
+ * the wheels create a circle with radius R = 13.625"
+ * The max forward velocity is 113 inches/sec
+ * The Forward Velocity is related to the rotation as follows:
+ * R = 13.625 inches = 346mm
+ * Vf = forward velocity --> maximum is 113 inches/sec
+ * Vr = rotational Velocity
+ * 1 rotation = 2Pi Radians
+ * C = Circumference = 2Pi*R inches
+ * Vr = Vf/2Pi*R (rotations/second)
+ * Vr = Vf*2Pi/2Pi*R = Vf/R (radians/second)
+ *
+ * At Vf = 113inches/second Vr = 1.32 rotations/sec or 8.29 radians/sec (too fast)
+ * Limit to 1/4 turn per second = Pi/2 radians/sec and solve for new Vf
+ * Vrmax = Pi/2 = Vf/R;  Vfmax = 21 inches/second = 533.4mm/sec
+ * Vrmax = 10*(Pi/2)(e-1)Radians/sec = 16 (tenths of radians/sec)  16 ~= 15.7 and is a "nice" base2 number
+ * NOTE:  All calculations done using "Tenths of radians" must be divided by 10 to get the right answer.
+ *  
+ * Vfturnmax = R*Vrmax 
+ *
+ * The fastest we will ever turn will be to modify the left and right wheel speeds by Vfturnmax/2
+ * Speedleft = Vfleft + Vfturnmax/2
+ * Speedright = Vfright - Vfturnmax/2
+ * 
+ * ***********************************************************/
+
+#define R 346
+#define Vrmax 16
+#define radScale 10
+
+
+/*
+ *  Connect the right drive motors to PWM13 and/or PWM14 on the RC.
+ *  Connect the left  drive motors to PWM15 and/or PWM16 on the RC.
+ */
+
+#define rightPWM pwm13
+#define leftPWM pwm15
+#define PWMoffset 127
+
+/*** Define joystick driver variables ***/
+// Define the gear ratio for high vs low gear (low is 1.59x slower
+#define gearRatio 1.59
+
+// Scale factor to scale the max joystick value into mm/sec
+// highGearStick2mm ~= 11 = 2872/255
+// i.e. setSpeed = stickValue*highGearStick2mm in mm/sec
+#define highGearStick2mm Smax/255
+#define lowGearStick2mm Smax/255/1.59
+
+// Define a region in which turn speed makes no difference
+#define DEADBAND = 0
+
+
+static const int Kp_speed = 1*CoeffScale;
+static const int Ki_speed = 0*CoeffScale;
+static const int Kd_speed = 0*CoeffScale;
+
+static const int Kp_turn = 1*CoeffScale;
+static const int Ki_turn = 0*CoeffScale;
+static const int Kd_turn = 0*CoeffScale;
+
+/*** local types ***/
+typedef struct {
+    int errorIntegral;
+    int errorLast;
+	char *currentPWM
+} PIDState;
+
+/*** static globals ***/
+static int targetSpeed = 0;
+static int targetTurningSpeed = 0;
+
+static PIDState leftWheelState = {0,0};
+static PIDState rightWheelState = {0,0};
+static PIDState turningState = {0,0};
+
+/*** functions ***/
+void wheels_doMain() {
+
+long Vfturn=0L;
+long VleftSpeed=0L;
+long VrightSpeed=0L;
+int E=0;
+char Rd=0;
+char Rl=0;
+
+int leftActualSpeed=speedometer_getSpeed(&speedometer_left);
+int rightActualSpeed=speedometer_getSpeed(&speedometer_right);
+
+	static unsigned int i = 0;
+	++i;
+	if( i > 500 ) {
+		printf("SPEED left: %d, right %d\r", leftActualSpeed, rightActualSpeed);
+		printf("PWM left: %d, right %d\r\r", (int)pwm15, (int)pwm13);
+		i=0;
+	}
+
+	//Guess at Current wheel direction based on current PWM values
+	Rd = wheels_getDriveDirection(rightWheel);
+	Rl = wheels_getDriveDirection(leftWheel);
+
+	//TurningSpeed PID
+//	E = (Rl*leftActualSpeed - Rd*rightActualSpeed) - targetTurningSpeed;
+//	Vfturn = (long)(Kp_turn*E + Ki_turn*turningState.errorIntegral + Kd_turn*(turningState.errorLast - E));
+//	turningState.errorIntegral = safeAdd(E, turningState.errorIntegral);
+
+//	Vfturn = (( limitTurningSpeed((long)Vfturn)/radScale) >> 1 );  // Vfturn is now ready to be added and subtracted with the left and right Vf controllers
+	
+	//Left Speed PID 
+
+	E = Rl*leftActualSpeed - (targetSpeed + Vfturn);
+	leftWheelState.errorIntegral = safeAdd(E, leftWheelState.errorIntegral);   // safeAdd() prevents integral saturation overflow
+	VleftSpeed = (long)(Kp_speed*E + Ki_speed*leftWheelState.errorIntegral + Kd_speed*(leftWheelState.errorLast-E));
+
+	leftWheelState.errorLast = E;
+	VleftSpeed = limitSpeed(VleftSpeed/CoeffScale/OUTscale);
+	
+	//Right Speed PID 
+
+//	E = Rd*rightActualSpeed - (targetSpeed - Vfturn);
+//	VrightSpeed = (long)(Kp_speed*E + Ki_speed*rightWheelState.errorIntegral + Kd_speed*(rightWheelState.errorLast-E));
+//	rightWheelState.errorIntegral = safeAdd(E, rightWheelState.errorIntegral);   // safeAdd() prevents integral saturation overflow
+
+//	VrightSpeed = limitSpeed(VrightSpeed/CoeffScale/OUTscale);
+
+	// Note : safePWMs needs to be more elegant
+	pwm13=pwm14=safePWMs(VrightSpeed, PWMoffset);
+	pwm15=pwm16=safePWMs(VleftSpeed, PWMoffset);
+
+//	Generate_Pwms(pwm13,pwm14,pwm15,pwm16);  This should be done in user_fast, but not in this function
+}
+
+static unsigned 
+
+void wheels_doMain2(void) {
+
+}
+
+void wheels_setDriveSpeed( int a_targetSpeed ) {
+	targetSpeed = a_targetSpeed;
+}
+
+void wheels_setTurningSpeed( int a_turningSpeed ) {
+	targetTurningSpeed = a_turningSpeed;
+}
+
+void wheels_twoStickDriver(char a_leftStick, char a_rightStick, char a_lowGear){
+	int turnSpeed=0;
+	int speed=0;
+	speed = (int)(((a_leftStick-PWMoffset) + (a_rightStick-PWMoffset)) >> 1);
+	turnSpeed = (int)((a_leftStick-PWMoffset) - (a_rightStick-PWMoffset));
+
+	if(a_lowGear){
+		speed = speed*lowGearStick2mm;
+	}
+	else{
+		speed = speed*highGearStick2mm;
+	}
+
+	wheels_setDriveSpeed( speed );
+	wheels_setTurningSpeed( turnSpeed );
+}
+
+
+// Use this on the output of the turning speed PID to limit how fast we can turn to Vrmax
+long limitTurningSpeed(long a_turningSpeed){
+	if(a_turningSpeed < -Vrmax ){
+		return(-Vrmax);
+		}
+	else if( a_turningSpeed > Vrmax ){
+		return(Vrmax);
+	}
+	else{
+		return(a_turningSpeed);
+	    }
+}
+
+//Limit a given speed after scaling to -128, 127
+long limitSpeed(long a_speed){
+	if (a_speed > OUTmax){
+		return(OUTmax);
+       		}
+	else if (a_speed < OUTmin){
+		return(OUTmin);
+		}
+	else{
+		return(a_speed);
+	}
+}
+
+// Guess the actual wheel direction based on the current pwm values
+char wheels_getDriveDirection(char a_pwm) {
+	if( a_pwm > 127 ) {
+		return 1;
+	} else if ( a_pwm < 127 ) {
+		return -1;
+	} else {
+		return 0;
+	}
+
+}
+
+// Accumulate safely without overflow signed numbers
+int safeAdd(int one, int two)
+{
+	int sum;
+
+
+	sum = one + two;
+
+	if((two > 0) && (sum < one))
+	{
+		return(32767);
+	}
+	else if((two < 0) && (sum > one))
+	{
+		return(-32768);
+	}			
+	else
+	{ 
+		return(sum);
+	}
+}
+
+// Shift signed chars to unsigned pwm 0-255 range unsigned chars
+unsigned char safePWMs(long one, long two)
+{
+	long sum;
+
+	sum = one + two;
+
+	if(sum < 0)
+	{
+		return((unsigned char) 0);
+	}
+	else if(sum > 255 )
+	{
+		return((unsigned char) 255);
+	}			
+	else
+	{ 
+		return((unsigned char) sum);
+	}
+}
+
+void wheels_moduleInitialize( void ) {
+}
